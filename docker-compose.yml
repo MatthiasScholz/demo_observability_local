@@ -1,0 +1,97 @@
+---
+x-logging: &default-logging
+  driver: loki
+  options:
+    loki-url: 'http://localhost:3100/loki/api/v1/push'
+    labels: namespace
+    loki-relabel-config: |
+      - action: replace
+        source_labels: ["namespace","compose_service"]
+        separator: "/"
+        target_label: job
+      - action: replace
+        source_labels: ["container_name"]
+        target_label: instance
+
+version: "3"
+services:
+
+  # NOTE: Still needed for Traefik
+  jaeger:
+    image: jaegertracing/all-in-one
+    environment:
+      - COLLECTOR_ZIPKIN_HTTP_PORT=19411
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+    pull_policy: always
+    networks:
+      - traefik_webgateway
+    expose:
+      - "5778"   # sampling
+      - "6831"   # agent
+      - "16686"
+      - "14250"
+      - "9411"   # zipkin
+      - "19411"  # zipkin
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+    logging: *default-logging
+
+  tempo:
+    image: grafana/tempo:latest
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./support/tempo.yaml:/etc/tempo.yaml
+    expose:
+      - "5778"  # jaeger sampling?
+      - "6831"  # jaeger agent ?
+      - "9411"  # zipkin
+    ports:
+      - "14268"  # jaeger ingest
+    networks:
+      - traefik_webgateway
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:2.3.0
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports:
+      - "3100:3100"                                   # loki needs to be exposed so it receives logs
+    networks:
+      - traefik_webgateway
+    environment:
+      - JAEGER_AGENT_HOST=tempo
+      - JAEGER_ENDPOINT=http://tempo:14268/api/traces # send traces to Tempo
+      - JAEGER_SAMPLER_TYPE=const
+      - JAEGER_SAMPLER_PARAM=1
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:latest
+    command: ["--config.file=/etc/prometheus.yaml"]
+    volumes:
+      - ./support/prometheus.yaml:/etc/prometheus.yaml
+    ports:
+      - "9090:9090"
+    networks:
+      - traefik_webgateway
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:8.1.2
+    volumes:
+      - ./support/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    ports:
+      - "3000:3000"
+    networks:
+      - traefik_webgateway
+    logging: *default-logging
+
+networks:
+  traefik_webgateway:
+    external: ${USE_EXISTING_DOCKER_NETWORK:-false}
+    name: traefik_webgateway
